@@ -1,0 +1,303 @@
+---
+title: "Scenario Evaluation"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data Preparation & Cleaning
+```{r library, message=F}
+library(magrittr)
+library(dplyr)
+```
+
+## Calculating the Probability of Default for Test Set
+
+## Importing the Test Datasets
+```{r}
+test_scenario3 <- read_csv("test_scenario3.csv")
+test_scenario1_2 <- read_csv("test_scenario1_2.csv")
+```
+
+## Getting Columns Specific to Scenario 1, 2 and 3
+
+```{r}
+requested_loan_sc1_2 <- test_scenario1_2 %>% dplyr::select(requested_loan)
+requested_loan_sc3 <- test_scenario3 %>% dplyr::select(requested_loan)
+proposed_intrest_rate <- test_scenario3 %>% dplyr::select(Proposed_Intrest_Rate)
+```
+
+
+## Loading PD and LGD of Customers in Test Set
+
+```{r}
+LGD <- read.csv("LGD.csv")
+PD <- read.csv("PD.csv")
+```
+
+
+## Evaluating Customers in Scenario 1
+
+CAPITAL <- 1.4 Billion
+
+```{r}
+scenario_1 <- test_scenario1_2 %>%
+  dplyr::select(id) %>%
+  bind_cols(requested_loan_sc1_2, PD, LGD) %>%
+  rename(LGD = x) %>%
+  mutate(
+    Gain = requested_loan * 0.0432 * 5 * (1 - PD),
+    Risk = requested_loan * PD *  LGD,
+    oppurtunity = Gain- Risk
+  )
+
+summary(scenario_1)
+```
+
+## Total Requested Loan in Scenario 1
+```{r}
+scenario_1 %>%
+  dplyr::select(requested_loan) %>%
+  transmute(total_requested_loan = format(sum(.), big.mark = ",", scientific = F)) %>%
+  head(1)
+```
+
+
+
+## PD at 0.5 in Scenario 1
+```{r}
+scenario_1 %>%
+  mutate(default = ifelse(PD >= 0.5, 1, 0)) %>%
+  mutate_at(c("default"), as.factor) %>%
+  dplyr::select(default) %>%
+  summary()
+```
+
+## Total Sum of Gain if PD >=0.5
+```{r}
+scenario_1 %>%
+  mutate(default = ifelse(PD >= 0.5, 1, 0)) %>%
+  mutate_at(c("default"), as.factor) %>%
+  filter(default == 0) %>%
+  dplyr::select(Gain) %>%
+  transmute(total_gain = format(sum(.), big.mark = ",", scientific = F)) %>%
+  head(1)
+```
+
+## PD at 0.1 in Scenario 1
+```{r}
+scenario_1 %>%
+  mutate(default = ifelse(PD >= 0.1, 1, 0)) %>%
+  mutate_at(c("default"), as.factor) %>%
+  dplyr::select(default) %>%
+  summary()
+```
+
+## Total Sum of Gain if PD >=0.1
+```{r}
+scenario_1 %>%
+  mutate(default = ifelse(PD >= 0.1, 1, 0)) %>%
+  mutate_at(c("default"), as.factor) %>%
+  filter(default == 0) %>%
+  dplyr::select(Gain) %>%
+  transmute(total_gain = format(sum(.), big.mark = ",", scientific = F)) %>%
+  head(1)
+```
+
+## Approving Customers in Scenario 1 based on Gain >= Risk
+```{r}
+scenario_1 %>%
+  mutate(loan_approval = ifelse(Gain >= Risk, 1, 0)) %>%
+  mutate_at(c("loan_approval"), as.factor) %>%
+  dplyr::select(loan_approval) %>%
+  summary()
+```
+
+## Total Sum of Gain in Scenario 1
+```{r}
+scenario_1 %>%
+  mutate(loan_approval = ifelse(Gain >= Risk, 1, 0)) %>%
+  mutate_at(c("loan_approval"), as.factor) %>%
+  filter(loan_approval == 1) %>%
+  dplyr::select(Gain) %>%
+  transmute(total_gain = format(sum(.), big.mark = ",", scientific = F)) %>%
+  head(1)
+```
+
+## Total Requested Loan where Gain >= Risk in Scenario 1
+```{r}
+scenario_1 %>%
+  mutate(loan_approval = ifelse(Gain >= Risk, 1, 0)) %>%
+  mutate_at(c("loan_approval"), as.factor) %>%
+  filter(loan_approval == 1) %>%
+  dplyr::select(requested_loan) %>%
+  transmute(total_requested_loan = format(sum(.), big.mark = ",", scientific = F)) %>%
+  head(1)
+```
+
+## Final Decision on Customer Loan Approval in Scenario 1
+```{r}
+scenario_1 %>%
+  mutate(loan_approval = ifelse(Gain >= Risk, 1, 0)) %>%
+  dplyr::select(id,loan_approval) %>%
+  write.csv(file = "G6_S1.csv", row.names = F)
+```
+
+### Evaluating Customers in Scenario 2
+
+Available loans = 450million
+```{r}
+scenario_2 <- test_scenario1_2 %>%
+  dplyr::select(id) %>%
+  bind_cols(requested_loan_sc1_2, PD, LGD) %>%
+  rename(LGD = x) %>%
+  mutate(
+    Gain = requested_loan * 0.0432 * 5 * (1 - PD),
+    Risk = requested_loan * PD *  LGD,
+    Opportunity = Gain - Risk
+  )
+
+
+
+```
+
+### Final Decision on Customer Loan Approval in Scenario 2
+
+The second scenario is similar to the first but now we have a budget of $450 million. 
+
+```{r}
+Scen_2<-  scenario_2 %>%
+  group_by(id, requested_loan) %>%
+  summarise(loan_approval = ifelse(Opportunity > 13820, 1, 0))
+
+total_loan <- Scen_2  %>% dplyr::filter(loan_approval == 1)
+
+scen_2_results <- total_loan %>% dplyr::select(id, loan_approval)
+
+```
+
+```{r}
+write.csv(file = "G6_S2.csv", row.names = F)
+```
+
+
+```{r}
+sum(total_loan$requested_loan) 
+```
+ 
+
+### Evaluating Customers in Scenario 3
+
+Loans available = 1.4 Billion
+
+```{r}
+scenario_3 <- test_scenario3 %>%
+  dplyr::select(id) %>%
+  bind_cols(requested_loan_sc1_2, proposed_intrest_rate, PD, LGD) %>%
+  rename(LGD = x) %>%
+  mutate(
+    Gain = requested_loan * Proposed_Intrest_Rate * 5 * (1 - PD),
+    Risk = requested_loan * PD *  LGD
+  )
+
+head(scenario_3)
+```
+
+```{r}
+scenario_3 %>% dplyr::select(Proposed_Intrest_Rate) %>% summary()
+```
+
+## Total Requested Loan where Gain >= Risk in Scenario 3
+
+```{r}
+scenario_3 %>%
+  mutate(loan_approval = ifelse(Gain >= Risk, 1, 0)) %>%
+  mutate_at(c("loan_approval"), as.factor) %>%
+  dplyr::select(loan_approval) %>%
+  summary()
+```
+
+
+```{r}
+scenario_3 %>%
+  mutate(loan_approval = ifelse(Gain >= Risk, 1, 0)) %>%
+  mutate_at(c("loan_approval"), as.factor) %>%
+  filter(loan_approval == 1) %>%
+  dplyr::select(requested_loan) %>%
+  transmute(total_requested_loan = format(sum(.), big.mark = ",", scientific = F)) %>%
+  head(1)
+```
+
+## Total Sum of Gain if Gain >= Risk
+```{r}
+scenario_3 %>%
+  mutate(loan_approval = ifelse(Gain >= Risk, 1, 0)) %>%
+  mutate_at(c("loan_approval"), as.factor) %>%
+  filter(loan_approval == 1) %>%
+  dplyr::select(Gain) %>%
+  transmute(total_gain = format(sum(.), big.mark = ",", scientific = F)) %>%
+  head(1)
+```
+
+## PD at 0.5 in Scenario 3
+```{r}
+scenario_3 %>%
+  mutate(default = ifelse(PD >= 0.5, 1, 0)) %>%
+  mutate_at(c("default"), as.factor) %>%
+  dplyr::select(default) %>%
+  summary()
+```
+
+## Total Sum of Gain if PD >=0.5
+```{r}
+scenario_3 %>%
+  mutate(default = ifelse(PD >= 0.5, 1, 0)) %>%
+  mutate_at(c("default"), as.factor) %>%
+  filter(default == 0) %>%
+  dplyr::select(Gain) %>%
+  transmute(total_gain = format(sum(.), big.mark = ",", scientific = F)) %>%
+  head(1)
+```
+
+## PD at 0.1 in Scenario 3
+```{r}
+scenario_3 %>%
+  mutate(default = ifelse(PD >= 0.1, 1, 0)) %>%
+  mutate_at(c("default"), as.factor) %>%
+  dplyr::select(default) %>%
+  summary()
+```
+
+## Total Sum of Gain if PD >=0.1
+```{r}
+scenario_3 %>%
+  mutate(default = ifelse(PD >= 0.1, 1, 0)) %>%
+  mutate_at(c("default"), as.factor) %>%
+  filter(default == 0) %>%
+  dplyr::select(Gain) %>%
+  transmute(total_gain = format(sum(.), big.mark = ",", scientific = F)) %>%
+  head(1)
+```
+
+
+
+### Final Descision on Customer Loan Approval in Scenario 3
+```{r}
+scenario_3 %>%
+  mutate(default = ifelse(PD >= 0.5, 1, 0)) %>%
+  mutate(loan_approval = ifelse(default == 0, 1, 0)) %>%
+  dplyr::select(id,loan_approval) %>%
+  write.csv(file = "G6_S3.csv", row.names = F)
+```
+
+```{r}
+scenario_3 %>%
+  mutate(default = ifelse(PD >= 0.5, 1, 0)) %>%
+  mutate_at(c("default"), as.factor) %>%
+  filter(default == 0) %>%
+  dplyr::select(requested_loan) %>%
+  transmute(total_requested_loan = format(sum(.), big.mark = ",", scientific = F)) %>%
+  head(1)
+```

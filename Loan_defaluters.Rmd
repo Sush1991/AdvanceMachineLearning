@@ -1,0 +1,338 @@
+---
+title: "Loan Default Prediction & Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+## Importing Libraries
+```{r library, message=F}
+library(magrittr)
+library(dplyr)
+library(ggplot2)
+library(pROC)
+library(caret)
+library(readr)
+library(doParallel)
+library(MASS)  # Package needed to generate correlated precictors
+library(glmnet)  # Package to fit ridge/lasso/elastic net models
+```
+
+## Importing Training Data
+```{r,message=F}
+df <- read_csv("train_v3.csv")
+```
+
+## Cleaning The Data Up
+```{r}
+## Adding The Target Variable
+target_df <- df %>% 
+  dplyr::select(loss) %>%
+  mutate_at(c("loss"), ~ifelse(. > 0, 1, 0)) %>%
+  mutate_at(c("loss"), as.factor)
+
+summary(target_df)
+```
+
+## Filtering Predictors
+```{r}
+train_predictors <- df %>% 
+  dplyr::select(-c("X1", "id", "loss"))
+
+# Removing Near Zero Variance columns
+nzv_df <- nearZeroVar(train_predictors, allowParallel = T, foreach = T)
+train_predictors_filtered <- train_predictors[, -nzv_df]
+```
+
+## Median Imputation
+```{r}
+impute_model <- preProcess(train_predictors_filtered, method = "medianImpute")
+train_predictors_imputed <- predict(impute_model, train_predictors_filtered)
+
+anyNA(train_predictors_imputed)
+```
+
+```{r}
+#Converting to matrix
+x.train <- train_predictors_imputed %>% data.matrix()
+y.train <- target_df %>% use_series("loss")
+```
+
+## Building The PD Model
+
+## Training a model with Cross Validation using Lasso regression
+```{r}
+cvfit <- cv.glmnet(
+  x.train, y.train,
+  type.measure = "auc",
+  family = "binomial",
+  alpha = 1,
+  parallel = T
+)
+
+plot(cvfit)
+```
+
+```{r}
+# best parameter
+cvfit$lambda.min
+max(cvfit$cvm)
+```
+
+## Calculating Probability of Default for Test Set
+
+## Import Test Datasets
+```{r, message=FALSE}
+test_scenario3 <- read_csv("test_scenario3.csv")
+test_scenario1_2 <- read_csv("test_scenario1_2.csv")
+```
+
+## Getting The Test Predictors
+```{r}
+test_predictors <- test_scenario1_2 %>% dplyr::select(-c("X1", "X", "id", "requested_loan"))
+```
+
+## Cleaning The Data Up
+
+## Removing Near Zero Variance Variables
+```{r}
+test_nzv_values <- nearZeroVar(test_predictors, allowParallel = T, foreach = T)
+test_predictors_filtered <- test_predictors[, -test_nzv_values]
+
+# Median Imputation
+test_impute <- preProcess(test_predictors_filtered, method = "medianImpute")
+test_predictors_imputed <- predict(test_impute, test_predictors_filtered)
+
+anyNA(test_predictors_imputed)
+```
+
+## Predicting Probability of Default
+```{r}
+#Converting to matrix
+test_data <- test_predictors_imputed %>% dplyr::select(colnames(x.train)) %>%
+  data.matrix()
+
+prob_default <- predict(
+  cvfit,
+  newx = test_data,
+  s = "lambda.min",
+  type = "response"
+  ) %>%
+  set_colnames("PD")
+
+summary(prob_default)
+```
+
+```{r}
+write.csv(prob_default, file = "PD.csv", row.names = F)
+```
+
+## Building A Model to Predict Loss Given Default
+
+## Filtering Rows With `loss` > 0
+
+```{r}
+LD_train_predictors <- df %>% filter(loss > 0)
+
+head(LD_train_predictors)
+```
+
+```{r}
+summary(LD_train_predictors$loss)
+```
+
+## Removing Near Zero Variance Variables
+
+```{r}
+LD_nzv <- nearZeroVar(LD_train_predictors, allowParallel = T, foreach = T)
+LD_train_predictors_filtered <- LD_train_predictors[, -LD_nzv]
+```
+
+## Median Inputation
+
+```{r}
+LD_impute_model <- preProcess(LD_train_predictors_filtered, method = "medianImpute")
+LD_train_predictors_imputed <- predict(LD_impute_model, LD_train_predictors_filtered)
+
+anyNA(LD_train_predictors_imputed)
+```
+
+## Seperating Predictor Variables from Target Variable
+
+```{r}
+LD_train_predictors_1 <- LD_train_predictors_imputed %>% dplyr::select(-c("X1", "id", "loss"))
+loss_target_df <- LD_train_predictors_imputed %>% dplyr::select(loss)
+```
+
+## Computing The Correlation Matrix
+
+```{r}
+corr_matrix <- cor(LD_train_predictors_1, loss_target_df)
+
+summary(corr_matrix)
+
+corr_df <- as.data.frame(corr_matrix) %>%
+  transmute(
+    predictors = rownames(corr_matrix),
+    corr = loss,
+    abs_corr = abs(loss)
+  )
+
+rownames(corr_df) <- rownames(corr_matrix)
+
+head(corr_df)
+```
+
+```{r}
+top_corr_df <- corr_df %>%
+  arrange(desc(abs_corr)) %>%
+  head(600)
+
+top_predictor_df_r <- LD_train_predictors_1 %>% dplyr::select(top_corr_df$predictors)
+```
+
+```{r}
+head(top_predictor_df_r)
+```
+
+```{r}
+LD_x.train<-top_predictor_df_r
+LD_y.train<-loss_target_df %>% dplyr::select(c("loss")) %>% use_series("loss") %>% as.numeric()
+```
+
+## Building The LGD Model
+
+## Training model (caret) with Cross Validation
+
+```{r}
+ctrl_opts <- trainControl(
+  method = "cv",
+  number = 10,
+  allowParallel = T
+)
+
+tune_grid <- expand.grid(alpha = c(1, 0.5, 0), lambda = seq(0, 1, by = 0.01))
+```
+
+
+```{r}
+model_rsqr <- train(
+  x = LD_x.train,
+  y = LD_y.train,
+  method = "glmnet",
+  metric = "Rsquared",
+  tuneGrid = tune_grid,
+  trControl = ctrl_opts
+)
+
+max(model_rsqr$results$Rsquared)
+```
+
+
+```{r}
+plot(model_rsqr)
+```
+
+```{r}
+model_mae <- train(
+  x = LD_x.train,
+  y = LD_y.train,
+  method = "glmnet",
+  metric = "MAE",
+  tuneGrid = tune_grid,
+  trControl = ctrl_opts
+)
+
+max(model_mae$results$Rsquared)
+```
+
+
+```{r}
+plot(model_mae)
+```
+
+## Choosing the Model based on Rsquared Metric
+
+```{r}
+coef_matrix <- coef(model_rsqr$finalModel, s = model_rsqr$bestTune$lambda)
+
+cv_coef <- data.frame(
+  name = coef_matrix@Dimnames[[1]][coef_matrix@i + 1],
+  coefficient = coef_matrix@x
+  ) %>%
+  filter(name !="(Intercept)") %>%
+  arrange(-abs(coefficient)) %>%
+  use_series("name") %>%
+  as.character()
+```
+
+## Separating Signals from the Noise
+
+```{r}
+signals <- LD_x.train %>% dplyr::select(cv_coef)
+head(signals)
+```
+
+```{r}
+final_train <- cbind(signals, loss_target_df)
+```
+
+## Training glm Model 
+
+
+```{r}
+glm_model <- glm(loss ~ ., family = gaussian, data = final_train)
+r_sqred <- cor(loss_target_df, predict(glm_model))^2 %>% set_rownames("Rsquared")
+
+r_sqred
+```
+
+## Computing Probability of Default for Test Set
+
+
+## Getting The Test Predictors
+```{r}
+test_predictors_df_r <- test_scenario1_2 %>% dplyr::select(-c("requested_loan", "X1", "X", "id"))
+```
+
+### Cleaning The Data Up
+
+## Median Imputation
+```{r}
+test_impute_model_r <- preProcess(test_predictors_df_r, method = "medianImpute")
+test_predictors_df_cln_r <- predict(test_impute_model_r, test_predictors_df_r)
+
+anyNA(test_predictors_df_cln_r)
+```
+
+## Predicting Loss Given Default
+```{r}
+test_data_LD <- test_predictors_df_cln_r %>%
+  dplyr::select(colnames(signals))
+
+head(test_data_LD)
+```
+
+```{r, message=F}
+LD_default <- predict(glm_model, test_data_LD)
+LD_default <- (LD_default/100)
+
+```
+
+```{r}
+summary(LD_default)
+```
+
+```{r}
+ggplot(as.data.frame(LD_default), aes(x = LD_default)) +
+  geom_histogram(bins = 20) +
+  xlab("Loss Given Default")
+```
+
+```{r}
+write.csv(LD_default, file = "LGD.csv", row.names = F)
+```
